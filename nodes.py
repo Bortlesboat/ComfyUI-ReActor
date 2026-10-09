@@ -166,6 +166,10 @@ class reactor:
                 "source_image": ("IMAGE",),
                 "face_model": ("FACE_MODEL",),
                 "face_boost": ("FACE_BOOST",),
+                "nsfw_detection": ("BOOLEAN", {
+                    "default": True, "label_off": "OFF", "label_on": "ON",
+                    "tooltip": "When enabled, check input images before swapping. OFF skips detector loading, downloads and inference.",
+                }),
             },
             "hidden": {"faces_order": "FACES_ORDER"},
         }
@@ -417,7 +421,7 @@ class reactor:
         return result
 
 
-    def execute(self, enabled, input_image, swap_model, detect_gender_source, detect_gender_input, source_faces_index, input_faces_index, console_log_level, face_restore_model,face_restore_visibility, codeformer_weight, facedetection, source_image=None, face_model=None, faces_order=None, face_boost=None):
+    def execute(self, enabled, input_image, swap_model, detect_gender_source, detect_gender_input, source_faces_index, input_faces_index, console_log_level, face_restore_model,face_restore_visibility, codeformer_weight, facedetection, source_image=None, face_model=None, faces_order=None, face_boost=None, nsfw_detection=True):
 
         device = model_management.get_torch_device()
 
@@ -440,34 +444,38 @@ class reactor:
         apply_log_level(console_log_level)
 
         if not enabled:
-            return (input_image,face_model)
-        elif source_image is None and face_model is None:
-            logger.error("Please provide 'source_image' or `face_model`")
-            return (input_image,face_model)
+            return (input_image,face_model,input_image)
 
         if face_model == "none":
             face_model = None
 
+        if source_image is None and face_model is None:
+            logger.error("Please provide 'source_image' or `face_model`")
+            return (input_image,face_model,input_image)
+
+        if state.interrupted or model_management.processing_interrupted():
+            raise model_management.InterruptProcessingException()
+
         script = FaceSwapScript()
         pil_images = batch_tensor_to_pil(input_image)
 
-        # NSFW checker
-        logger.status("Checking for any unsafe content...")
-        pbar = progress_bar(len(pil_images))
-        pil_images_sfw = []
-        for img in pil_images:
-            if state.interrupted or model_management.processing_interrupted():
-                logger.status("Interrupted by User")
-                break
-            img_byte_arr = io.BytesIO()
-            img.save(img_byte_arr, format='PNG')
-            img_byte_arr = img_byte_arr.getvalue()
-            if not sfw.nsfw_image(img_byte_arr, NSFWDET_MODEL_PATH):
-                pil_images_sfw.append(img)
-            pbar.update(1)
-        pil_images = pil_images_sfw
-        # # #
-        progress_bar_reset(pbar)
+        if nsfw_detection:
+            logger.status("Checking for any unsafe content...")
+            pbar = progress_bar(len(pil_images))
+            for image_index, img in enumerate(pil_images):
+                if state.interrupted or model_management.processing_interrupted():
+                    raise model_management.InterruptProcessingException()
+                img_byte_arr = io.BytesIO()
+                img.save(img_byte_arr, format='PNG')
+                if sfw.nsfw_image(img_byte_arr.getvalue(), NSFWDET_MODEL_PATH):
+                    raise RuntimeError(
+                        f"ReActor: content check rejected input image {image_index + 1}. "
+                        "No face swap was run. Review the input or the nsfw_detection setting."
+                    )
+                pbar.update(1)
+            progress_bar_reset(pbar)
+        else:
+            sfw.clear_model_cache()
 
         if len(pil_images) > 0:
 
@@ -514,10 +522,7 @@ class reactor:
                 result = reactor.restore_face(self,result,face_restore_model,face_restore_visibility,codeformer_weight,facedetection)
 
         else:
-            image_black = Image.new("RGB", (512, 512))
-            result = batched_pil_to_tensor([image_black])
-            face_model_to_provide = None
-            original_image = result
+            raise RuntimeError("ReActor: input image batch is empty.")
 
         return (result,face_model_to_provide,original_image)
 
@@ -540,6 +545,10 @@ class ReActorPlusOpt:
                 "face_model": ("FACE_MODEL",),
                 "options": ("OPTIONS",),
                 "face_boost": ("FACE_BOOST",),
+                "nsfw_detection": ("BOOLEAN", {
+                    "default": True, "label_off": "OFF", "label_on": "ON",
+                    "tooltip": "When enabled, check input images before swapping. OFF skips detector loading, downloads and inference.",
+                }),
             }
         }
 
@@ -565,7 +574,7 @@ class ReActorPlusOpt:
         self.boost_model_visibility = 1
         self.boost_cf_weight = 0.5
 
-    def execute(self, enabled, input_image, swap_model, facedetection, face_restore_model, face_restore_visibility, codeformer_weight, source_image=None, face_model=None, options=None, face_boost=None):
+    def execute(self, enabled, input_image, swap_model, facedetection, face_restore_model, face_restore_visibility, codeformer_weight, source_image=None, face_model=None, options=None, face_boost=None, nsfw_detection=True):
 
         if options is not None:
             self.faces_order = [options["input_faces_order"], options["source_faces_order"]]
@@ -583,7 +592,7 @@ class ReActorPlusOpt:
             self.face_boost_enabled = False
 
         result = reactor.execute(
-            self,enabled,input_image,swap_model,self.detect_gender_source,self.detect_gender_input,self.source_faces_index,self.input_faces_index,self.console_log_level,face_restore_model,face_restore_visibility,codeformer_weight,facedetection,source_image,face_model,self.faces_order, face_boost=face_boost
+            self,enabled,input_image,swap_model,self.detect_gender_source,self.detect_gender_input,self.source_faces_index,self.input_faces_index,self.console_log_level,face_restore_model,face_restore_visibility,codeformer_weight,facedetection,source_image,face_model,self.faces_order, face_boost=face_boost, nsfw_detection=nsfw_detection
         )
 
         return result
@@ -1669,6 +1678,7 @@ class ReActorUnload:
     CATEGORY = "🌌 ReActor"
 
     def execute(self, trigger):
+        sfw.clear_model_cache()
         unload_all_models()
         return (trigger,)
 

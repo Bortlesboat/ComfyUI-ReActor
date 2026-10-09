@@ -1,3 +1,5 @@
+> **Bortlesboat fork:** adds an `nsfw_detection` ON/OFF switch to both face-swap nodes, lazy detector loading, classifier reuse, and atomic model downloads. See [fork setup, controls, and checks](docs/FORK.md). The upstream documentation follows below.
+
 <div align="center">
 
   <img src="https://github.com/Gourieff/Assets/raw/main/sd-webui-reactor/ReActor_logo_NEW_EN.png?raw=true" alt="logo" width="180px"/>
